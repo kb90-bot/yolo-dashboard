@@ -3,25 +3,118 @@ name: Telegram Digest
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "30 23 * * 1-5"
 
 jobs:
-  telegram-test:
+  telegram-digest:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Send Telegram test message
+      - name: Fetch screeners and send Telegram digest
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
-            echo "Telegram secrets are missing."
-            exit 1
-          fi
+          python - <<'PY'
+          import json
+          import os
+          import urllib.request
+          import urllib.parse
+          from datetime import datetime, timezone
 
-          curl --fail-with-body --silent --show-error \
-            --request POST \
-            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
-            --data-urlencode "text=YOLO Dashboard: Telegram-Verbindung erfolgreich getestet."
+          url = (
+              "https://raw.githubusercontent.com/"
+              "DocYolo77/yolo-dashboard/main/data/screeners.json"
+          )
 
+          def fetch_json(url):
+              req = urllib.request.Request(
+                  url, headers={"User-Agent": "YOLO-Telegram-Digest"}
+              )
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  return json.loads(response.read().decode("utf-8"))
+
+          data = fetch_json(url)
+          meta = data.get("meta", {})
+          screeners = data.get("screeners", {})
+
+          if not screeners:
+              raise SystemExit("Keine Screener in screeners.json gefunden.")
+
+          lines = [
+              "YOLO Dashboard – Screener Digest",
+              f"Datenstand: {meta.get('as_of_date', 'unbekannt')}",
+              ""
+          ]
+
+          def fmt(value, suffix=""):
+              if value is None:
+                  return "-"
+              return f"{value}{suffix}"
+
+          for key, screener in screeners.items():
+              if not isinstance(screener, dict):
+                  continue
+
+              tickers = screener.get("tickers", [])
+              name = screener.get("name", key)
+              lines.append(f"{name} ({len(tickers)}):")
+
+              if not tickers:
+                  lines.append("  Keine Treffer")
+              else:
+                  for stock in tickers[:10]:
+                      symbol = stock.get("symbol", "?")
+                      close = stock.get("close")
+                      rs1w = stock.get("rs_percentile_1w")
+                      rs1m = stock.get("rs_percentile_1m")
+                      d1 = stock.get("d1_pct")
+                      rvol = stock.get("rvol_50")
+
+                      parts = [symbol]
+                      if close is not None:
+                          parts.append(f"Kurs {close}")
+                      if rs1w is not None:
+                          parts.append(f"RS 1W {rs1w}")
+                      if rs1m is not None:
+                          parts.append(f"RS 1M {rs1m}")
+                      if d1 is not None:
+                          parts.append(f"Tag {d1}%")
+                      if rvol is not None:
+                          parts.append(f"RVOL {rvol}")
+
+                      lines.append("  " + " | ".join(parts))
+
+              lines.append("")
+
+          lines.append("Quelle: veröffentlichtes YOLO-Screener-JSON")
+          message = "\n".join(lines)
+
+          # Telegram erlaubt maximal 4096 Zeichen pro Nachricht.
+          message = message[:3900]
+
+          token = os.environ["TELEGRAM_BOT_TOKEN"]
+          chat_id = os.environ["TELEGRAM_CHAT_ID"]
+
+          payload = urllib.parse.urlencode({
+              "chat_id": chat_id,
+              "text": message
+          }).encode("utf-8")
+
+          request = urllib.request.Request(
+              f"https://api.telegram.org/bot{token}/sendMessage",
+              data=payload,
+              method="POST"
+          )
+
+          with urllib.request.urlopen(request, timeout=30) as response:
+              result = json.loads(response.read().decode("utf-8"))
+
+          if not result.get("ok"):
+              raise SystemExit("Telegram meldet einen Fehler.")
+
+          print("Telegram-Digest erfolgreich gesendet.")
+          print("Datenstand:", meta.get("as_of_date", "unbekannt"))
+          print("Screener:", len(screeners))
+          PY
