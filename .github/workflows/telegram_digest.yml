@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Fetch screeners and send Telegram digest
+      - name: Fetch complete YOLO data and send to Telegram
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -21,100 +21,244 @@ jobs:
           import os
           import urllib.request
           import urllib.parse
-          from datetime import datetime, timezone
+          import tempfile
+          from pathlib import Path
 
-          url = (
+          BASE = (
               "https://raw.githubusercontent.com/"
-              "DocYolo77/yolo-dashboard/main/data/screeners.json"
+              "DocYolo77/yolo-dashboard/main/data/"
           )
 
-          def fetch_json(url):
-              req = urllib.request.Request(
-                  url, headers={"User-Agent": "YOLO-Telegram-Digest"}
-              )
-              with urllib.request.urlopen(req, timeout=30) as response:
-                  return json.loads(response.read().decode("utf-8"))
-
-          data = fetch_json(url)
-          meta = data.get("meta", {})
-          screeners = data.get("screeners", {})
-
-          if not screeners:
-              raise SystemExit("Keine Screener in screeners.json gefunden.")
-
-          lines = [
-              "YOLO Dashboard – Screener Digest",
-              f"Datenstand: {meta.get('as_of_date', 'unbekannt')}",
-              ""
+          FILES = [
+              "screeners.json",
+              "dashboard_state.json",
+              "narratives.json",
+              "narratives_map.json",
+              "narrative_universe_state.json",
+              "snapshot.json",
           ]
 
-          def fmt(value, suffix=""):
+          TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+          CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
+          API = f"https://api.telegram.org/bot{TOKEN}/"
+
+          def api_call(method, fields, file_path=None):
+              boundary = "----YOLOTelegramBoundary"
+              body = bytearray()
+
+              for key, value in fields.items():
+                  body.extend(f"--{boundary}\r\n".encode())
+                  body.extend(
+                      f'Content-Disposition: form-data; name="{key}"\r\n\r\n'
+                      .encode()
+                  )
+                  body.extend(str(value).encode("utf-8"))
+                  body.extend(b"\r\n")
+
+              if file_path:
+                  path = Path(file_path)
+                  body.extend(f"--{boundary}\r\n".encode())
+                  body.extend(
+                      (
+                          'Content-Disposition: form-data; '
+                          f'name="document"; filename="{path.name}"\r\n'
+                      ).encode()
+                  )
+                  body.extend(b"Content-Type: application/json\r\n\r\n")
+                  body.extend(path.read_bytes())
+                  body.extend(b"\r\n")
+
+              body.extend(f"--{boundary}--\r\n".encode())
+
+              request = urllib.request.Request(
+                  API + method,
+                  data=bytes(body),
+                  headers={
+                      "Content-Type": f"multipart/form-data; boundary={boundary}"
+                  },
+                  method="POST",
+              )
+
+              with urllib.request.urlopen(request, timeout=90) as response:
+                  result = json.loads(response.read().decode("utf-8"))
+
+              if not result.get("ok"):
+                  raise RuntimeError(f"Telegram API error: {result}")
+
+              return result
+
+          def fetch_json(name, directory):
+              url = BASE + name
+              request = urllib.request.Request(
+                  url, headers={"User-Agent": "YOLO-Telegram-Digest"}
+              )
+
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  raw = response.read()
+
+              path = Path(directory) / name
+              path.write_bytes(raw)
+
+              try:
+                  data = json.loads(raw.decode("utf-8"))
+              except Exception as exc:
+                  raise RuntimeError(
+                      f"{name} ist kein gültiges JSON: {exc}"
+                  )
+
+              print(f"Downloaded {name}: {len(raw)} bytes")
+              return data, path
+
+          def send_long_message(text):
+              # Telegram-Nachrichten sicher unter dem 4096-Zeichen-Limit halten.
+              limit = 3500
+              chunks = []
+
+              while len(text) > limit:
+                  cut = text.rfind("\n", 0, limit)
+                  if cut < 1:
+                      cut = limit
+                  chunks.append(text[:cut])
+                  text = text[cut:].lstrip("\n")
+
+              if text:
+                  chunks.append(text)
+
+              for index, chunk in enumerate(chunks, 1):
+                  api_call(
+                      "sendMessage",
+                      {
+                          "chat_id": CHAT_ID,
+                          "text": (
+                              f"[Teil {index}/{len(chunks)}]\n" + chunk
+                          ),
+                      },
+                  )
+
+          def fmt(value):
               if value is None:
                   return "-"
-              return f"{value}{suffix}"
+              if isinstance(value, float):
+                  return f"{value:.2f}".rstrip("0").rstrip(".")
+              return str(value)
 
-          for key, screener in screeners.items():
-              if not isinstance(screener, dict):
-                  continue
+          with tempfile.TemporaryDirectory() as temp:
+              downloaded = {}
+              paths = {}
 
-              tickers = screener.get("tickers", [])
-              name = screener.get("name", key)
-              lines.append(f"{name} ({len(tickers)}):")
+              # Alle angeforderten Originaldateien abrufen.
+              for name in FILES:
+                  data, path = fetch_json(name, temp)
+                  downloaded[name] = data
+                  paths[name] = path
 
-              if not tickers:
-                  lines.append("  Keine Treffer")
-              else:
-                  for stock in tickers[:10]:
-                      symbol = stock.get("symbol", "?")
-                      close = stock.get("close")
-                      rs1w = stock.get("rs_percentile_1w")
-                      rs1m = stock.get("rs_percentile_1m")
-                      d1 = stock.get("d1_pct")
-                      rvol = stock.get("rvol_50")
+              screeners_data = downloaded["screeners.json"]
+              dashboard = downloaded["dashboard_state.json"]
 
-                      parts = [symbol]
-                      if close is not None:
-                          parts.append(f"Kurs {close}")
-                      if rs1w is not None:
-                          parts.append(f"RS 1W {rs1w}")
-                      if rs1m is not None:
-                          parts.append(f"RS 1M {rs1m}")
-                      if d1 is not None:
-                          parts.append(f"Tag {d1}%")
-                      if rvol is not None:
-                          parts.append(f"RVOL {rvol}")
+              meta = screeners_data.get("meta", {})
+              dashboard_meta = dashboard.get("meta", {})
+              screeners = screeners_data.get("screeners", {})
 
-                      lines.append("  " + " | ".join(parts))
+              # Vollständiger Screener-Digest: keine Begrenzung der Treffer.
+              lines = [
+                  "YOLO DASHBOARD – VOLLSTÄNDIGER DIGEST",
+                  f"Screener-Datenstand: {meta.get('as_of_date', 'unbekannt')}",
+                  f"Dashboard-Datenstand: "
+                  f"{dashboard_meta.get('as_of_date', 'unbekannt')}",
+                  f"Eligible Universe: "
+                  f"{meta.get('eligible_universe_size', 'unbekannt')}",
+                  "",
+              ]
 
-              lines.append("")
+              for key, screener in screeners.items():
+                  tickers = screener.get("tickers", [])
+                  lines.append(
+                      f"=== {screener.get('name', key)} "
+                      f"({len(tickers)} Treffer) ==="
+                  )
 
-          lines.append("Quelle: veröffentlichtes YOLO-Screener-JSON")
-          message = "\n".join(lines)
+                  for stock in tickers:
+                      fields = [
+                          stock.get("symbol", "?"),
+                          f"Close={fmt(stock.get('close'))}",
+                          f"RS1W={fmt(stock.get('rs_percentile_1w'))}",
+                          f"RS1M={fmt(stock.get('rs_percentile_1m'))}",
+                          f"RS3M={fmt(stock.get('rs_percentile_3m'))}",
+                          f"RS6M={fmt(stock.get('rs_percentile_6m'))}",
+                          f"StructuralRS={fmt(stock.get('structural_rs'))}",
+                          f"SMA50={fmt(stock.get('sma50_distance_pct'))}%",
+                          f"SMA200={fmt(stock.get('sma200_distance_pct'))}%",
+                          f"EMA10={fmt(stock.get('ema10_distance_pct'))}%",
+                          f"EMA20={fmt(stock.get('ema20_distance_pct'))}%",
+                          f"Day={fmt(stock.get('d1_pct'))}%",
+                          f"MTD={fmt(stock.get('mtd_pct'))}%",
+                          f"YTD={fmt(stock.get('ytd_pct'))}%",
+                          f"RVOL={fmt(stock.get('rvol_50'))}",
+                          f"ATRext={fmt(stock.get('atr_extension'))}",
+                          f"ThrustRS={fmt(stock.get('stock_thrust_rs'))}",
+                          f"Volume={fmt(stock.get('volume'))}",
+                      ]
+                      lines.append(" | ".join(fields))
 
-          # Telegram erlaubt maximal 4096 Zeichen pro Nachricht.
-          message = message[:3900]
+                  lines.append("")
 
-          token = os.environ["TELEGRAM_BOT_TOKEN"]
-          chat_id = os.environ["TELEGRAM_CHAT_ID"]
+              # Opportunity Engine: alle veröffentlichten Kategorien und Counts.
+              opportunities = dashboard.get("opportunities", {})
+              counts = opportunities.get("counts", {})
 
-          payload = urllib.parse.urlencode({
-              "chat_id": chat_id,
-              "text": message
-          }).encode("utf-8")
+              lines.extend([
+                  "=== OPPORTUNITY ENGINE ===",
+                  f"Market Regime: "
+                  f"{dashboard.get('market_regime', {}).get('state', '-')}",
+                  f"Regime Score: "
+                  f"{fmt(dashboard.get('market_regime', {}).get('score'))}",
+                  f"QQQ Health: "
+                  f"{dashboard.get('qqq_health', {}).get('base_state', '-')}",
+                  f"QQQ Score: "
+                  f"{fmt(dashboard.get('qqq_health', {}).get('score'))}",
+                  "",
+                  "Opportunity Counts:",
+              ])
 
-          request = urllib.request.Request(
-              f"https://api.telegram.org/bot{token}/sendMessage",
-              data=payload,
-              method="POST"
-          )
+              for category, count in counts.items():
+                  lines.append(f"{category}: {count}")
 
-          with urllib.request.urlopen(request, timeout=30) as response:
-              result = json.loads(response.read().decode("utf-8"))
+              lines.extend(["", "=== ALLE OPPORTUNITY-EINTRÄGE ==="])
 
-          if not result.get("ok"):
-              raise SystemExit("Telegram meldet einen Fehler.")
+              for item in opportunities.get("items", []):
+                  lines.append(
+                      " | ".join([
+                          str(item.get("symbol", "?")),
+                          f"Quality={fmt(item.get('quality_v2'))}",
+                          f"State={fmt(item.get('state_v2'))}",
+                          f"Narrative={fmt(item.get('primary_narrative_name'))}",
+                          f"Price={fmt(item.get('price'))}",
+                          f"StructuralRS={fmt(item.get('structural_rs'))}",
+                          f"RS1W={fmt(item.get('rs_1w'))}",
+                          f"RS1M={fmt(item.get('rs_1m'))}",
+                          f"RS3M={fmt(item.get('rs_3m'))}",
+                          f"RS6M={fmt(item.get('rs_6m'))}",
+                          f"EMA10={fmt(item.get('ema10_distance_pct'))}%",
+                          f"EMA20={fmt(item.get('ema20_distance_pct'))}%",
+                          f"ATRext={fmt(item.get('atr_extension'))}",
+                          f"Extended={fmt(item.get('extended_v2'))}",
+                          f"Resetting={fmt(item.get('resetting'))}",
+                      ])
+                  )
 
-          print("Telegram-Digest erfolgreich gesendet.")
-          print("Datenstand:", meta.get("as_of_date", "unbekannt"))
-          print("Screener:", len(screeners))
+              send_long_message("\n".join(lines))
+
+              # Die vollständigen Original-JSON-Dateien als Telegram-Anhänge.
+              for name in FILES:
+                  api_call(
+                      "sendDocument",
+                      {
+                          "chat_id": CHAT_ID,
+                          "caption": f"YOLO Originaldaten: {name}",
+                      },
+                      paths[name],
+                  )
+                  print(f"Sent document: {name}")
+
+              print("Vollständiger YOLO-Digest und JSON-Dateien gesendet.")
           PY
