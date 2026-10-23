@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Fetch complete YOLO data and send to Telegram
+      - name: Fetch complete YOLO data and send readable Telegram digest
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -20,7 +20,6 @@ jobs:
           import json
           import os
           import urllib.request
-          import urllib.parse
           import tempfile
           from pathlib import Path
 
@@ -49,8 +48,7 @@ jobs:
               for key, value in fields.items():
                   body.extend(f"--{boundary}\r\n".encode())
                   body.extend(
-                      f'Content-Disposition: form-data; name="{key}"\r\n\r\n'
-                      .encode()
+                      f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode()
                   )
                   body.extend(str(value).encode("utf-8"))
                   body.extend(b"\r\n")
@@ -88,9 +86,9 @@ jobs:
               return result
 
           def fetch_json(name, directory):
-              url = BASE + name
               request = urllib.request.Request(
-                  url, headers={"User-Agent": "YOLO-Telegram-Digest"}
+                  BASE + name,
+                  headers={"User-Agent": "YOLO-Telegram-Digest"},
               )
 
               with urllib.request.urlopen(request, timeout=60) as response:
@@ -98,19 +96,12 @@ jobs:
 
               path = Path(directory) / name
               path.write_bytes(raw)
-
-              try:
-                  data = json.loads(raw.decode("utf-8"))
-              except Exception as exc:
-                  raise RuntimeError(
-                      f"{name} ist kein gültiges JSON: {exc}"
-                  )
+              data = json.loads(raw.decode("utf-8"))
 
               print(f"Downloaded {name}: {len(raw)} bytes")
               return data, path
 
           def send_long_message(text):
-              # Telegram-Nachrichten sicher unter dem 4096-Zeichen-Limit halten.
               limit = 3500
               chunks = []
 
@@ -124,14 +115,13 @@ jobs:
               if text:
                   chunks.append(text)
 
+              total = len(chunks)
               for index, chunk in enumerate(chunks, 1):
                   api_call(
                       "sendMessage",
                       {
                           "chat_id": CHAT_ID,
-                          "text": (
-                              f"[Teil {index}/{len(chunks)}]\n" + chunk
-                          ),
+                          "text": f"Teil {index}/{total}\n\n{chunk}",
                       },
                   )
 
@@ -146,109 +136,94 @@ jobs:
               downloaded = {}
               paths = {}
 
-              # Alle angeforderten Originaldateien abrufen.
               for name in FILES:
                   data, path = fetch_json(name, temp)
                   downloaded[name] = data
                   paths[name] = path
 
-              screeners_data = downloaded["screeners.json"]
+              screener_data = downloaded["screeners.json"]
               dashboard = downloaded["dashboard_state.json"]
-
-              meta = screeners_data.get("meta", {})
+              meta = screener_data.get("meta", {})
               dashboard_meta = dashboard.get("meta", {})
-              screeners = screeners_data.get("screeners", {})
+              screeners = screener_data.get("screeners", {})
 
-              # Vollständiger Screener-Digest: keine Begrenzung der Treffer.
               lines = [
                   "YOLO DASHBOARD – VOLLSTÄNDIGER DIGEST",
                   f"Screener-Datenstand: {meta.get('as_of_date', 'unbekannt')}",
-                  f"Dashboard-Datenstand: "
-                  f"{dashboard_meta.get('as_of_date', 'unbekannt')}",
-                  f"Eligible Universe: "
-                  f"{meta.get('eligible_universe_size', 'unbekannt')}",
+                  f"Dashboard-Datenstand: {dashboard_meta.get('as_of_date', 'unbekannt')}",
+                  f"Eligible Universe: {meta.get('eligible_universe_size', 'unbekannt')}",
                   "",
               ]
 
+              # Alle Treffer aller veröffentlichten Screener.
               for key, screener in screeners.items():
                   tickers = screener.get("tickers", [])
-                  lines.append(
-                      f"=== {screener.get('name', key)} "
-                      f"({len(tickers)} Treffer) ==="
-                  )
+                  lines.extend([
+                      "",
+                      "=" * 28,
+                      f"{screener.get('name', key)} – {len(tickers)} Treffer",
+                      "=" * 28,
+                      "",
+                  ])
 
                   for stock in tickers:
-                      fields = [
-                          stock.get("symbol", "?"),
-                          f"Close={fmt(stock.get('close'))}",
-                          f"RS1W={fmt(stock.get('rs_percentile_1w'))}",
-                          f"RS1M={fmt(stock.get('rs_percentile_1m'))}",
-                          f"RS3M={fmt(stock.get('rs_percentile_3m'))}",
-                          f"RS6M={fmt(stock.get('rs_percentile_6m'))}",
-                          f"StructuralRS={fmt(stock.get('structural_rs'))}",
-                          f"SMA50={fmt(stock.get('sma50_distance_pct'))}%",
-                          f"SMA200={fmt(stock.get('sma200_distance_pct'))}%",
-                          f"EMA10={fmt(stock.get('ema10_distance_pct'))}%",
-                          f"EMA20={fmt(stock.get('ema20_distance_pct'))}%",
-                          f"Day={fmt(stock.get('d1_pct'))}%",
-                          f"MTD={fmt(stock.get('mtd_pct'))}%",
-                          f"YTD={fmt(stock.get('ytd_pct'))}%",
-                          f"RVOL={fmt(stock.get('rvol_50'))}",
-                          f"ATRext={fmt(stock.get('atr_extension'))}",
-                          f"ThrustRS={fmt(stock.get('stock_thrust_rs'))}",
-                          f"Volume={fmt(stock.get('volume'))}",
-                      ]
-                      lines.append(" | ".join(fields))
+                      symbol = stock.get("symbol", "?")
+                      lines.extend([
+                          f"--- {symbol} | Kurs {fmt(stock.get('close'))} ---",
+                          (
+                              f"Relative Stärke: 1W {fmt(stock.get('rs_percentile_1w'))} | "
+                              f"1M {fmt(stock.get('rs_percentile_1m'))} | "
+                              f"3M {fmt(stock.get('rs_percentile_3m'))} | "
+                              f"6M {fmt(stock.get('rs_percentile_6m'))}"
+                          ),
+                          f"Structural RS: {fmt(stock.get('structural_rs'))}",
+                          (
+                              f"SMA50 {fmt(stock.get('sma50_distance_pct'))}% | "
+                              f"SMA200 {fmt(stock.get('sma200_distance_pct'))}%"
+                          ),
+                          (
+                              f"EMA10 {fmt(stock.get('ema10_distance_pct'))}% | "
+                              f"EMA20 {fmt(stock.get('ema20_distance_pct'))}%"
+                          ),
+                          (
+                              f"Tag {fmt(stock.get('d1_pct'))}% | "
+                              f"MTD {fmt(stock.get('mtd_pct'))}% | "
+                              f"YTD {fmt(stock.get('ytd_pct'))}%"
+                          ),
+                          (
+                              f"RVOL {fmt(stock.get('rvol_50'))} | "
+                              f"ATR-Extension {fmt(stock.get('atr_extension'))} | "
+                              f"Thrust RS {fmt(stock.get('stock_thrust_rs'))}"
+                          ),
+                          f"ADR20 {fmt(stock.get('adr20'))}% | Volumen {fmt(stock.get('volume'))}",
+                          f"Market Cap {fmt(stock.get('market_cap'))}",
+                          "",
+                      ])
 
-                  lines.append("")
-
-              # Opportunity Engine: alle veröffentlichten Kategorien und Counts.
-              opportunities = dashboard.get("opportunities", {})
-              counts = opportunities.get("counts", {})
-
+              # Dashboard: Originaldaten werden zusätzlich vollständig angehängt.
               lines.extend([
-                  "=== OPPORTUNITY ENGINE ===",
-                  f"Market Regime: "
-                  f"{dashboard.get('market_regime', {}).get('state', '-')}",
-                  f"Regime Score: "
-                  f"{fmt(dashboard.get('market_regime', {}).get('score'))}",
-                  f"QQQ Health: "
-                  f"{dashboard.get('qqq_health', {}).get('base_state', '-')}",
-                  f"QQQ Score: "
-                  f"{fmt(dashboard.get('qqq_health', {}).get('score'))}",
                   "",
-                  "Opportunity Counts:",
+                  "=" * 28,
+                  "OPPORTUNITY ENGINE – ÜBERSICHT",
+                  "=" * 28,
+                  "",
               ])
 
-              for category, count in counts.items():
-                  lines.append(f"{category}: {count}")
-
-              lines.extend(["", "=== ALLE OPPORTUNITY-EINTRÄGE ==="])
-
-              for item in opportunities.get("items", []):
-                  lines.append(
-                      " | ".join([
-                          str(item.get("symbol", "?")),
-                          f"Quality={fmt(item.get('quality_v2'))}",
-                          f"State={fmt(item.get('state_v2'))}",
-                          f"Narrative={fmt(item.get('primary_narrative_name'))}",
-                          f"Price={fmt(item.get('price'))}",
-                          f"StructuralRS={fmt(item.get('structural_rs'))}",
-                          f"RS1W={fmt(item.get('rs_1w'))}",
-                          f"RS1M={fmt(item.get('rs_1m'))}",
-                          f"RS3M={fmt(item.get('rs_3m'))}",
-                          f"RS6M={fmt(item.get('rs_6m'))}",
-                          f"EMA10={fmt(item.get('ema10_distance_pct'))}%",
-                          f"EMA20={fmt(item.get('ema20_distance_pct'))}%",
-                          f"ATRext={fmt(item.get('atr_extension'))}",
-                          f"Extended={fmt(item.get('extended_v2'))}",
-                          f"Resetting={fmt(item.get('resetting'))}",
-                      ])
-                  )
+              # Dashboard-State kann je nach Originalversion unterschiedlich aufgebaut sein.
+              # Deshalb verlassen wir uns für die vollständigen Felder zusätzlich auf den JSON-Anhang.
+              for key in ("market_regime", "qqq_health", "opportunities"):
+                  if key in dashboard:
+                      lines.append(f"{key}:")
+                      lines.append(json.dumps(
+                          dashboard[key],
+                          ensure_ascii=False,
+                          indent=2,
+                      ))
+                      lines.append("")
 
               send_long_message("\n".join(lines))
 
-              # Die vollständigen Original-JSON-Dateien als Telegram-Anhänge.
+              # Vollständige JSON-Originaldateien als Anhänge.
               for name in FILES:
                   api_call(
                       "sendDocument",
@@ -260,5 +235,5 @@ jobs:
                   )
                   print(f"Sent document: {name}")
 
-              print("Vollständiger YOLO-Digest und JSON-Dateien gesendet.")
+              print("Vollständiger, formatierter Digest erfolgreich gesendet.")
           PY
