@@ -1,5 +1,5 @@
 
-name: Telegram Digest
+name: YOLO Telegram Screener
 
 on:
   workflow_dispatch:
@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Fetch complete YOLO data and send readable Telegram digest
+      - name: Filter YOLO screeners and send top 10
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -20,220 +20,150 @@ jobs:
           import json
           import os
           import urllib.request
-          import tempfile
-          from pathlib import Path
 
-          BASE = (
+          URL = (
               "https://raw.githubusercontent.com/"
-              "DocYolo77/yolo-dashboard/main/data/"
+              "DocYolo77/yolo-dashboard/main/data/screeners.json"
           )
 
-          FILES = [
-              "screeners.json",
-              "dashboard_state.json",
-              "narratives.json",
-              "narratives_map.json",
-              "narrative_universe_state.json",
-              "snapshot.json",
+          def fetch_json(url):
+              request = urllib.request.Request(
+                  url,
+                  headers={"User-Agent": "YOLO-Telegram-Screener"},
+              )
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  return json.loads(response.read().decode("utf-8"))
+
+          def number(value):
+              return (
+                  isinstance(value, (int, float))
+                  and not isinstance(value, bool)
+              )
+
+          def fmt(value, digits=2):
+              if not number(value):
+                  return "n/a"
+              return f"{value:.{digits}f}"
+
+          data = fetch_json(URL)
+          meta = data.get("meta", {})
+          screeners = data.get("screeners", {})
+
+          # Only use published screener candidates.
+          # Require both trend filters and a valid original ranking metric.
+          candidates = {}
+
+          for screener_key, screener in screeners.items():
+              screener_name = screener.get("name", screener_key)
+
+              for stock in screener.get("tickers", []):
+                  symbol = stock.get("symbol")
+
+                  sma50 = stock.get("sma50_distance_pct")
+                  sma200 = stock.get("sma200_distance_pct")
+                  structural_rs = stock.get("structural_rs")
+
+                  if not symbol:
+                      continue
+
+                  # Strict filters: price must be above BOTH moving averages.
+                  # Missing values do not pass.
+                  if not number(sma50) or sma50 <= 0:
+                      continue
+                  if not number(sma200) or sma200 <= 0:
+                      continue
+
+                  # Do not invent a ranking for candidates without this metric.
+                  if not number(structural_rs):
+                      continue
+
+                  if symbol not in candidates:
+                      candidates[symbol] = {
+                          "stock": stock,
+                          "screeners": set(),
+                      }
+
+                  candidates[symbol]["screeners"].add(screener_name)
+
+          # Rank using existing original metrics, not a synthetic score.
+          def rank(item):
+              stock = item["stock"]
+              rs3m = stock.get("rs_percentile_3m")
+              rs6m = stock.get("rs_percentile_6m")
+
+              return (
+                  stock["structural_rs"],
+                  rs3m if number(rs3m) else float("-inf"),
+                  rs6m if number(rs6m) else float("-inf"),
+                  stock["symbol"],
+              )
+
+          ranked = sorted(
+              candidates.values(),
+              key=rank,
+              reverse=True,
+          )[:10]
+
+          lines = [
+              "YOLO — TOP 10 SCREENER-KANDIDATEN",
+              f"Datenstand: {meta.get('as_of_date', 'unbekannt')}",
+              "Filter: Kurs > SMA50 UND Kurs > SMA200",
+              "Ranking: Structural RS, dann RS 3M und RS 6M",
+              f"Qualifizierte Kandidaten: {len(candidates)}",
+              "",
           ]
 
-          TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-          CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
-          API = f"https://api.telegram.org/bot{TOKEN}/"
-
-          def api_call(method, fields, file_path=None):
-              boundary = "----YOLOTelegramBoundary"
-              body = bytearray()
-
-              for key, value in fields.items():
-                  body.extend(f"--{boundary}\r\n".encode())
-                  body.extend(
-                      f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode()
-                  )
-                  body.extend(str(value).encode("utf-8"))
-                  body.extend(b"\r\n")
-
-              if file_path:
-                  path = Path(file_path)
-                  body.extend(f"--{boundary}\r\n".encode())
-                  body.extend(
-                      (
-                          'Content-Disposition: form-data; '
-                          f'name="document"; filename="{path.name}"\r\n'
-                      ).encode()
-                  )
-                  body.extend(b"Content-Type: application/json\r\n\r\n")
-                  body.extend(path.read_bytes())
-                  body.extend(b"\r\n")
-
-              body.extend(f"--{boundary}--\r\n".encode())
-
-              request = urllib.request.Request(
-                  API + method,
-                  data=bytes(body),
-                  headers={
-                      "Content-Type": f"multipart/form-data; boundary={boundary}"
-                  },
-                  method="POST",
+          if not ranked:
+              lines.append(
+                  "Keine Kandidaten erfüllen alle Filter "
+                  "mit vollständig verfügbaren Ranking-Daten."
               )
 
-              with urllib.request.urlopen(request, timeout=90) as response:
-                  result = json.loads(response.read().decode("utf-8"))
+          for index, item in enumerate(ranked, start=1):
+              stock = item["stock"]
+              symbol = stock["symbol"]
+              tv_symbol = stock.get("tradingview_symbol", symbol)
+              screener_names = ", ".join(sorted(item["screeners"]))
 
-              if not result.get("ok"):
-                  raise RuntimeError(f"Telegram API error: {result}")
-
-              return result
-
-          def fetch_json(name, directory):
-              request = urllib.request.Request(
-                  BASE + name,
-                  headers={"User-Agent": "YOLO-Telegram-Digest"},
-              )
-
-              with urllib.request.urlopen(request, timeout=60) as response:
-                  raw = response.read()
-
-              path = Path(directory) / name
-              path.write_bytes(raw)
-              data = json.loads(raw.decode("utf-8"))
-
-              print(f"Downloaded {name}: {len(raw)} bytes")
-              return data, path
-
-          def send_long_message(text):
-              limit = 3500
-              chunks = []
-
-              while len(text) > limit:
-                  cut = text.rfind("\n", 0, limit)
-                  if cut < 1:
-                      cut = limit
-                  chunks.append(text[:cut])
-                  text = text[cut:].lstrip("\n")
-
-              if text:
-                  chunks.append(text)
-
-              total = len(chunks)
-              for index, chunk in enumerate(chunks, 1):
-                  api_call(
-                      "sendMessage",
-                      {
-                          "chat_id": CHAT_ID,
-                          "text": f"Teil {index}/{total}\n\n{chunk}",
-                      },
-                  )
-
-          def fmt(value):
-              if value is None:
-                  return "-"
-              if isinstance(value, float):
-                  return f"{value:.2f}".rstrip("0").rstrip(".")
-              return str(value)
-
-          with tempfile.TemporaryDirectory() as temp:
-              downloaded = {}
-              paths = {}
-
-              for name in FILES:
-                  data, path = fetch_json(name, temp)
-                  downloaded[name] = data
-                  paths[name] = path
-
-              screener_data = downloaded["screeners.json"]
-              dashboard = downloaded["dashboard_state.json"]
-              meta = screener_data.get("meta", {})
-              dashboard_meta = dashboard.get("meta", {})
-              screeners = screener_data.get("screeners", {})
-
-              lines = [
-                  "YOLO DASHBOARD – VOLLSTÄNDIGER DIGEST",
-                  f"Screener-Datenstand: {meta.get('as_of_date', 'unbekannt')}",
-                  f"Dashboard-Datenstand: {dashboard_meta.get('as_of_date', 'unbekannt')}",
-                  f"Eligible Universe: {meta.get('eligible_universe_size', 'unbekannt')}",
-                  "",
-              ]
-
-              # Alle Treffer aller veröffentlichten Screener.
-              for key, screener in screeners.items():
-                  tickers = screener.get("tickers", [])
-                  lines.extend([
-                      "",
-                      "=" * 28,
-                      f"{screener.get('name', key)} – {len(tickers)} Treffer",
-                      "=" * 28,
-                      "",
-                  ])
-
-                  for stock in tickers:
-                      symbol = stock.get("symbol", "?")
-                      lines.extend([
-                          f"--- {symbol} | Kurs {fmt(stock.get('close'))} ---",
-                          (
-                              f"Relative Stärke: 1W {fmt(stock.get('rs_percentile_1w'))} | "
-                              f"1M {fmt(stock.get('rs_percentile_1m'))} | "
-                              f"3M {fmt(stock.get('rs_percentile_3m'))} | "
-                              f"6M {fmt(stock.get('rs_percentile_6m'))}"
-                          ),
-                          f"Structural RS: {fmt(stock.get('structural_rs'))}",
-                          (
-                              f"SMA50 {fmt(stock.get('sma50_distance_pct'))}% | "
-                              f"SMA200 {fmt(stock.get('sma200_distance_pct'))}%"
-                          ),
-                          (
-                              f"EMA10 {fmt(stock.get('ema10_distance_pct'))}% | "
-                              f"EMA20 {fmt(stock.get('ema20_distance_pct'))}%"
-                          ),
-                          (
-                              f"Tag {fmt(stock.get('d1_pct'))}% | "
-                              f"MTD {fmt(stock.get('mtd_pct'))}% | "
-                              f"YTD {fmt(stock.get('ytd_pct'))}%"
-                          ),
-                          (
-                              f"RVOL {fmt(stock.get('rvol_50'))} | "
-                              f"ATR-Extension {fmt(stock.get('atr_extension'))} | "
-                              f"Thrust RS {fmt(stock.get('stock_thrust_rs'))}"
-                          ),
-                          f"ADR20 {fmt(stock.get('adr20'))}% | Volumen {fmt(stock.get('volume'))}",
-                          f"Market Cap {fmt(stock.get('market_cap'))}",
-                          "",
-                      ])
-
-              # Dashboard: Originaldaten werden zusätzlich vollständig angehängt.
               lines.extend([
-                  "",
-                  "=" * 28,
-                  "OPPORTUNITY ENGINE – ÜBERSICHT",
-                  "=" * 28,
+                  f"{index}. {symbol} | Kurs {fmt(stock.get('close'))}",
+                  f"   TradingView: {tv_symbol}",
+                  (
+                      f"   Structural RS: {fmt(stock.get('structural_rs'))}"
+                      f" | RS 3M: {fmt(stock.get('rs_percentile_3m'))}"
+                      f" | RS 6M: {fmt(stock.get('rs_percentile_6m'))}"
+                  ),
+                  (
+                      f"   SMA50: +{fmt(stock.get('sma50_distance_pct'))}%"
+                      f" | SMA200: +{fmt(stock.get('sma200_distance_pct'))}%"
+                  ),
+                  f"   Original-Screener: {screener_names}",
                   "",
               ])
 
-              # Dashboard-State kann je nach Originalversion unterschiedlich aufgebaut sein.
-              # Deshalb verlassen wir uns für die vollständigen Felder zusätzlich auf den JSON-Anhang.
-              for key in ("market_regime", "qqq_health", "opportunities"):
-                  if key in dashboard:
-                      lines.append(f"{key}:")
-                      lines.append(json.dumps(
-                          dashboard[key],
-                          ensure_ascii=False,
-                          indent=2,
-                      ))
-                      lines.append("")
+          message = "\n".join(lines)
+          payload = json.dumps({
+              "chat_id": os.environ["TELEGRAM_CHAT_ID"],
+              "text": message,
+              "disable_web_page_preview": True,
+          }).encode("utf-8")
 
-              send_long_message("\n".join(lines))
+          token = os.environ["TELEGRAM_BOT_TOKEN"]
+          request = urllib.request.Request(
+              f"https://api.telegram.org/bot{token}/sendMessage",
+              data=payload,
+              headers={"Content-Type": "application/json"},
+              method="POST",
+          )
 
-              # Vollständige JSON-Originaldateien als Anhänge.
-              for name in FILES:
-                  api_call(
-                      "sendDocument",
-                      {
-                          "chat_id": CHAT_ID,
-                          "caption": f"YOLO Originaldaten: {name}",
-                      },
-                      paths[name],
-                  )
-                  print(f"Sent document: {name}")
+          with urllib.request.urlopen(request, timeout=60) as response:
+              result = json.loads(response.read().decode("utf-8"))
 
-              print("Vollständiger, formatierter Digest erfolgreich gesendet.")
+          if not result.get("ok"):
+              raise RuntimeError(f"Telegram API error: {result}")
+
+          print(
+              f"Sent {len(ranked)} candidates "
+              f"from {len(candidates)} qualified tickers."
+          )
           PY
