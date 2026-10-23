@@ -67,11 +67,24 @@ jobs:
               return f"{value:.{digits}f}" if isnum(value) else "n/a"
 
           def get_date(data, filename):
-              raw = (data.get("meta") or {}).get("as_of_date")
+              meta = data.get("meta") or {}
+
+              # narratives.json uses meta.updated_at instead of meta.as_of_date.
+              raw = meta.get("as_of_date")
+              if not raw and filename == "narratives.json":
+                  raw = meta.get("updated_at")
+
+              # Both YYYY-MM-DD and ISO timestamps are accepted.
+              if isinstance(raw, str):
+                  raw = raw[:10]
+
               try:
                   result = date.fromisoformat(raw)
               except (TypeError, ValueError):
-                  fail(f"{filename}: missing or invalid meta.as_of_date")
+                  fail(
+                      f"{filename}: missing or invalid "
+                      "meta.as_of_date / meta.updated_at"
+                  )
 
               today = datetime.now(timezone.utc).date()
               if result > today or (today - result).days > MAX_AGE_DAYS:
