@@ -1,4 +1,3 @@
-
 name: YOLO Telegram Screener
 
 on:
@@ -6,9 +5,13 @@ on:
   schedule:
     - cron: "30 23 * * 1-5"
 
+permissions:
+  contents: read
+
 jobs:
   telegram-digest:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
 
     steps:
       - name: Filter YOLO screeners and send top 10
@@ -18,26 +21,56 @@ jobs:
         run: |
           python - <<'PY'
           import json
+          import math
           import os
+          import sys
+          import urllib.error
           import urllib.request
+          from datetime import date, datetime, timedelta, timezone
 
           URL = (
               "https://raw.githubusercontent.com/"
               "DocYolo77/yolo-dashboard/main/data/screeners.json"
           )
 
+          MAX_DATA_AGE_DAYS = 7
+          TELEGRAM_MAX_LENGTH = 4096
+
+          def fail(message):
+              print(f"ERROR: {message}", file=sys.stderr)
+              raise SystemExit(1)
+
           def fetch_json(url):
               request = urllib.request.Request(
                   url,
                   headers={"User-Agent": "YOLO-Telegram-Screener"},
               )
-              with urllib.request.urlopen(request, timeout=60) as response:
-                  return json.loads(response.read().decode("utf-8"))
+
+              try:
+                  with urllib.request.urlopen(request, timeout=60) as response:
+                      if response.status != 200:
+                          fail(f"Data source returned HTTP {response.status}.")
+                      raw = response.read().decode("utf-8")
+              except urllib.error.HTTPError as exc:
+                  fail(f"Could not fetch source: HTTP {exc.code}.")
+              except (urllib.error.URLError, TimeoutError, UnicodeDecodeError) as exc:
+                  fail(f"Could not fetch or decode source: {exc}")
+
+              try:
+                  data = json.loads(raw)
+              except json.JSONDecodeError as exc:
+                  fail(f"Source returned invalid JSON: {exc}")
+
+              if not isinstance(data, dict):
+                  fail("JSON root must be an object.")
+
+              return data
 
           def number(value):
               return (
                   isinstance(value, (int, float))
                   and not isinstance(value, bool)
+                  and math.isfinite(value)
               )
 
           def fmt(value, digits=2):
@@ -45,35 +78,124 @@ jobs:
                   return "n/a"
               return f"{value:.{digits}f}"
 
+          def validate_data_date(meta):
+              raw_date = meta.get("as_of_date")
+
+              if not isinstance(raw_date, str) or not raw_date.strip():
+                  fail("Missing meta.as_of_date; refusing to send an unverified report.")
+
+              try:
+                  data_date = date.fromisoformat(raw_date)
+              except ValueError:
+                  fail(f"Invalid meta.as_of_date: {raw_date!r}")
+
+              today_utc = datetime.now(timezone.utc).date()
+
+              if data_date > today_utc:
+                  fail(f"Data date {data_date} is in the future.")
+
+              if today_utc - data_date > timedelta(days=MAX_DATA_AGE_DAYS):
+                  fail(
+                      f"Data is stale: as_of_date={data_date}, "
+                      f"UTC date={today_utc}. Maximum allowed age: "
+                      f"{MAX_DATA_AGE_DAYS} days."
+                  )
+
+              return data_date
+
+          def telegram_send(message):
+              token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+              chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+
+              if not token:
+                  fail("GitHub Secret TELEGRAM_BOT_TOKEN is missing.")
+              if not chat_id:
+                  fail("GitHub Secret TELEGRAM_CHAT_ID is missing.")
+
+              if len(message) > TELEGRAM_MAX_LENGTH:
+                  fail(
+                      f"Message is {len(message)} characters; "
+                      f"Telegram limit is {TELEGRAM_MAX_LENGTH}. "
+                      "No message was sent."
+                  )
+
+              payload = json.dumps({
+                  "chat_id": chat_id,
+                  "text": message,
+                  "disable_web_page_preview": True,
+              }).encode("utf-8")
+
+              request = urllib.request.Request(
+                  f"https://api.telegram.org/bot{token}/sendMessage",
+                  data=payload,
+                  headers={"Content-Type": "application/json"},
+                  method="POST",
+              )
+
+              try:
+                  with urllib.request.urlopen(request, timeout=60) as response:
+                      result = json.loads(response.read().decode("utf-8"))
+              except urllib.error.HTTPError as exc:
+                  details = exc.read().decode("utf-8", errors="replace")[:1000]
+                  fail(f"Telegram HTTP error {exc.code}: {details}")
+              except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+                  fail(f"Telegram request failed: {exc}")
+
+              if not isinstance(result, dict) or not result.get("ok"):
+                  fail(f"Telegram API returned an error: {result}")
+
           data = fetch_json(URL)
-          meta = data.get("meta", {})
-          screeners = data.get("screeners", {})
+
+          meta = data.get("meta")
+          screeners = data.get("screeners")
+
+          if not isinstance(meta, dict):
+              fail("Invalid or missing meta object.")
+          if not isinstance(screeners, dict):
+              fail("Invalid or missing screeners object.")
+
+          data_date = validate_data_date(meta)
 
           # Only use published screener candidates.
           # Require both trend filters and a valid original ranking metric.
           candidates = {}
 
           for screener_key, screener in screeners.items():
-              screener_name = screener.get("name", screener_key)
+              if not isinstance(screener, dict):
+                  print(f"Skipping malformed screener: {screener_key}")
+                  continue
 
-              for stock in screener.get("tickers", []):
+              screener_name = screener.get("name", screener_key)
+              if not isinstance(screener_name, str):
+                  screener_name = str(screener_key)
+
+              stocks = screener.get("tickers", [])
+              if not isinstance(stocks, list):
+                  print(f"Skipping screener with invalid tickers: {screener_key}")
+                  continue
+
+              for stock in stocks:
+                  if not isinstance(stock, dict):
+                      continue
+
                   symbol = stock.get("symbol")
+                  if not isinstance(symbol, str) or not symbol.strip():
+                      continue
+
+                  symbol = symbol.strip().upper()
 
                   sma50 = stock.get("sma50_distance_pct")
                   sma200 = stock.get("sma200_distance_pct")
                   structural_rs = stock.get("structural_rs")
 
-                  if not symbol:
-                      continue
-
                   # Strict filters: price must be above BOTH moving averages.
-                  # Missing values do not pass.
+                  # Missing and non-finite values do not pass.
                   if not number(sma50) or sma50 <= 0:
                       continue
                   if not number(sma200) or sma200 <= 0:
                       continue
 
-                  # Do not invent a ranking for candidates without this metric.
+                  # Keep the original ranking metric; do not invent a score.
                   if not number(structural_rs):
                       continue
 
@@ -95,7 +217,7 @@ jobs:
                   stock["structural_rs"],
                   rs3m if number(rs3m) else float("-inf"),
                   rs6m if number(rs6m) else float("-inf"),
-                  stock["symbol"],
+                  stock["symbol"].upper(),
               )
 
           ranked = sorted(
@@ -106,7 +228,8 @@ jobs:
 
           lines = [
               "YOLO — TOP 10 SCREENER-KANDIDATEN",
-              f"Datenstand: {meta.get('as_of_date', 'unbekannt')}",
+              f"Datenstand: {data_date.isoformat()}",
+              "Quelle: DocYolo77/yolo-dashboard",
               "Filter: Kurs > SMA50 UND Kurs > SMA200",
               "Ranking: Structural RS, dann RS 3M und RS 6M",
               f"Qualifizierte Kandidaten: {len(candidates)}",
@@ -116,13 +239,17 @@ jobs:
           if not ranked:
               lines.append(
                   "Keine Kandidaten erfüllen alle Filter "
-                  "mit vollständig verfügbaren Ranking-Daten."
+                  "mit gültigen Ranking-Daten."
               )
 
           for index, item in enumerate(ranked, start=1):
               stock = item["stock"]
-              symbol = stock["symbol"]
+              symbol = stock["symbol"].strip().upper()
+
               tv_symbol = stock.get("tradingview_symbol", symbol)
+              if not isinstance(tv_symbol, str) or not tv_symbol.strip():
+                  tv_symbol = symbol
+
               screener_names = ", ".join(sorted(item["screeners"]))
 
               lines.extend([
@@ -134,36 +261,20 @@ jobs:
                       f" | RS 6M: {fmt(stock.get('rs_percentile_6m'))}"
                   ),
                   (
-                      f"   SMA50: +{fmt(stock.get('sma50_distance_pct'))}%"
-                      f" | SMA200: +{fmt(stock.get('sma200_distance_pct'))}%"
+                      f"   SMA50: {fmt(stock.get('sma50_distance_pct'))}%"
+                      f" | SMA200: {fmt(stock.get('sma200_distance_pct'))}%"
                   ),
                   f"   Original-Screener: {screener_names}",
                   "",
               ])
 
-          message = "\n".join(lines)
-          payload = json.dumps({
-              "chat_id": os.environ["TELEGRAM_CHAT_ID"],
-              "text": message,
-              "disable_web_page_preview": True,
-          }).encode("utf-8")
+          message = "\n".join(lines).rstrip()
 
-          token = os.environ["TELEGRAM_BOT_TOKEN"]
-          request = urllib.request.Request(
-              f"https://api.telegram.org/bot{token}/sendMessage",
-              data=payload,
-              headers={"Content-Type": "application/json"},
-              method="POST",
-          )
-
-          with urllib.request.urlopen(request, timeout=60) as response:
-              result = json.loads(response.read().decode("utf-8"))
-
-          if not result.get("ok"):
-              raise RuntimeError(f"Telegram API error: {result}")
+          telegram_send(message)
 
           print(
-              f"Sent {len(ranked)} candidates "
-              f"from {len(candidates)} qualified tickers."
+              f"Successfully sent {len(ranked)} candidates "
+              f"from {len(candidates)} qualified tickers. "
+              f"Data date: {data_date.isoformat()}."
           )
           PY
