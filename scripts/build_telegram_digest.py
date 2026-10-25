@@ -364,6 +364,8 @@ def simple_digest_lines(dashboard: dict, narrative_data: dict, screener_data: di
             stock_events.setdefault(str(event["symbol"]).upper(), set()).add(event.get("type"))
     fresh = [symbol for symbol, types in stock_events.items() if "new_fresh_leader" in types and "new_extended" not in types]
     lines.extend(fresh[:10] or ["Keine frischen Leader gemeldet."])
+    lines.extend(["", "LEADERS"])
+    lines.extend(ranked_lines("LEADERS", exclude_extended=True)[1:])
     lines.extend(["", "SCREENER-ERGEBNISSE"])
     lines.extend(ranked_lines("SCREENER-ERGEBNISSE")[1:])
     lines.extend(["", "Relative Stärke ist kein Kaufsignal.", "Quelle: DocYolo77/yolo-dashboard"])
