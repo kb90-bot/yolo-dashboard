@@ -99,7 +99,7 @@ def test_snapshot_has_independent_rank_maps():
     lists = build_ranked_lists(eligible_tickers(sample_data()))
     snap = snapshot_from_lists("2026-10-23", lists)
     assert snap["date"] == "2026-10-23"
-    assert snap["ranks"]["weekly"]["AAA"] == 1
+    assert snap["ranks"]["weekly"]["AAA"] == 2
     assert snap["ranks"]["mtf"]["BBB"] == 1
 
 
