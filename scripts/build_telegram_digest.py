@@ -81,13 +81,12 @@ def regime_lines(dashboard: dict) -> list[str]:
         qline = f"QQQ: {qstate}"
         if isnum(qscore):
             qline += f" | {fmt(qscore)}"
-        if isnum(qdelta):
-            qline += f" ({qdelta:+.1f})"
+        # The score delta is already highlighted in the change section.
         lines.append(qline)
     return lines
 
 
-def change_lines(dashboard: dict, limit: int = 8) -> list[str]:
+def change_lines(dashboard: dict, limit: int = 6) -> list[str]:
     events = ((dashboard.get("what_changed") or {}).get("events") or [])
     if not isinstance(events, list) or not events:
         return ["Keine belastbaren neuen Änderungen gemeldet."]
@@ -170,7 +169,7 @@ def change_lines(dashboard: dict, limit: int = 8) -> list[str]:
     return result[:limit] if result else ["Keine Änderungen mit ausreichend konkretem Signalwert."]
 
 
-def narrative_consensus(narrative_data: dict, limit: int = 8) -> list[str]:
+def narrative_consensus(narrative_data: dict, limit: int = 5) -> list[str]:
     narratives = narrative_data.get("narratives") or []
     if not isinstance(narratives, list):
         return ["Narrative-Daten nicht verfügbar."]
@@ -195,7 +194,7 @@ def narrative_consensus(narrative_data: dict, limit: int = 8) -> list[str]:
     return lines or ["Keine vergleichbaren Mehrzeitfenster-Narrative."]
 
 
-def screener_rows(screener_data: dict, limit: int = 6) -> list[str]:
+def screener_rows(screener_data: dict, limit: int = 4) -> list[str]:
     screeners = screener_data.get("screeners") or {}
     sections = [
         ("1W", "weekly_strength", "rs_percentile_1w"),
@@ -219,7 +218,7 @@ def screener_rows(screener_data: dict, limit: int = 6) -> list[str]:
                 if isinstance(symbol, str) and isnum(value):
                     ranked.append((float(value), symbol.upper(), ticker))
         ranked.sort(key=lambda row: (-row[0], row[1]))
-        chosen = [row for row in ranked if row[1] not in seen][:3]
+        chosen = [row for row in ranked if row[1] not in seen][:1]
         if chosen:
             lines.append(f"{label} — zusätzliche Zeitfenster-Kandidaten:")
             for value, symbol, ticker in chosen:
@@ -240,12 +239,12 @@ def leaderboard_lines() -> list[str]:
     mtf = lists.get("mtf") or []
     if mtf:
         lines.append("MTF LEADERS — Stärke über 1W/1M/3M/6M")
-        for row in mtf[:8]:
+        for row in mtf[:5]:
             lines.append(f"• {row.get('symbol')} MTF {fmt(row.get('mtf_score'))} | 1W {fmt(row.get('rs_percentile_1w'),0)} · 1M {fmt(row.get('rs_percentile_1m'),0)} · 3M {fmt(row.get('rs_percentile_3m'),0)} · 6M {fmt(row.get('rs_percentile_6m'),0)}")
     thrust = lists.get("thrust") or []
     if thrust:
-        mtf_symbols = {r.get("symbol") for r in mtf[:8] if isinstance(r, dict)}
-        unique = [r for r in thrust if isinstance(r, dict) and r.get("symbol") not in mtf_symbols][:6]
+        mtf_symbols = {r.get("symbol") for r in mtf[:5] if isinstance(r, dict)}
+        unique = [r for r in thrust if isinstance(r, dict) and r.get("symbol") not in mtf_symbols][:3]
         if unique:
             lines.append("WEEKLY THRUST — Beschleunigung, nicht Langfrist-Stärke")
             for row in unique:
