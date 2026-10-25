@@ -285,61 +285,89 @@ def send_chunks(lines: list[str]) -> None:
         send_telegram(chunk)
 
 
-def simple_digest_lines(dashboard: dict, narrative_data: dict) -> list[str]:
-    """Build a deliberately sparse, vertical Telegram message."""
-    lines = ["YOLO DAILY", f"Datenstand: {source_date(dashboard, 'dashboard_state.json').isoformat()}", ""]
-
-    regime = dashboard.get("market_regime") or {}
-    state = str(regime.get("state") or "UNKNOWN").upper().replace("_", " ")
-    lines.extend(["MARKTSTATUS", state])
-    if isnum(regime.get("score")):
-        lines.extend(["Markt-Score", fmt(regime["score"])])
+def simple_digest_lines(dashboard: dict, narrative_data: dict, screener_data: dict) -> list[str]:
+    lines = ["YOLO DAILY", f"Datenstand: {source_date(dashboard, 'dashboard_state.json').isoformat()}", "",
+             "MARKTSTATUS", str((dashboard.get("market_regime") or {}).get("state") or "UNKNOWN").upper().replace("_", " ")]
     qqq = dashboard.get("qqq_health") or {}
     if qqq.get("base_state"):
         lines.extend(["", "QQQ", str(qqq["base_state"])])
-        if isnum(qqq.get("score")):
-            lines.extend(["Score", fmt(qqq["score"])])
 
-    # Show only the strongest theme; put its name and value on separate lines.
-    narratives = narrative_data.get("narratives") or []
-    best = None
-    for item in narratives if isinstance(narratives, list) else []:
-        if not isinstance(item, dict):
+    events = ((dashboard.get("what_changed") or {}).get("events") or [])
+    lines.extend(["", "NARRATIVE-ÄNDERUNGEN"])
+    changes = []
+    for event in events if isinstance(events, list) else []:
+        if not isinstance(event, dict) or event.get("category") != "narrative":
             continue
-        name = item.get("name") or item.get("label") or item.get("id")
-        rs = item.get("narrative_rs") or {}
-        values = [rs.get(h) for h in ("1w", "1m", "3m", "6m")] if isinstance(rs, dict) else []
-        valid = [float(v) for v in values if isnum(v)]
-        if isinstance(name, str) and valid:
-            candidate = (sum(valid) / len(valid), name.strip())
-            if best is None or candidate[0] > best[0]:
-                best = candidate
-    lines.extend(["", "TOP-THEMA"])
-    if best:
-        lines.extend([best[1], "Ø Relative Stärke", fmt(best[0])])
-    else:
-        lines.append("Keine Daten verfügbar")
+        name = event.get("narrative_name") or event.get("narrative_id") or "Narrative"
+        typ = str(event.get("type") or "").replace("_", " ")
+        detail = ""
+        if isnum(event.get("from_score")) and isnum(event.get("to_score")):
+            detail = f" | {fmt(event['from_score'])} → {fmt(event['to_score'])}"
+        elif isinstance(event.get("from_rank"), int) and isinstance(event.get("to_rank"), int):
+            detail = f" | Rang {event['from_rank']} → {event['to_rank']}"
+        elif event.get("modifier"):
+            detail = f" | {event['modifier']}"
+        changes.append(f"{name} | {typ}{detail}")
+    lines.extend(changes[:6] or ["Keine Narrativ-Änderungen gemeldet."])
 
-    # Up to ten unique multi-timeframe leaders, one symbol per line.
-    lines.extend(["", "WATCHLIST"])
-    try:
-        with open("data/optimization_leaders.json", encoding="utf-8") as handle:
-            leaders_data = json.load(handle)
-        leaders = (leaders_data.get("leaderboards") or {}).get("mtf") or []
-    except (OSError, json.JSONDecodeError):
-        leaders = []
-    symbols = []
-    for row in leaders:
-        symbol = row.get("symbol") if isinstance(row, dict) else None
-        if isinstance(symbol, str) and symbol not in symbols:
-            symbols.append(symbol)
-        if len(symbols) == 10:
-            break
-    if symbols:
-        lines.extend(symbols)
-    else:
-        lines.append("Keine Leader-Daten verfügbar")
+    narratives = [n for n in (narrative_data.get("narratives") or []) if isinstance(n, dict) and isinstance(n.get("name"), str)]
+    horizons = [("1W", "1w"), ("1M", "1m"), ("3M", "3m"), ("6M", "6m")]
+    lines.extend(["", "NARRATIVES"])
+    for label, key in horizons:
+        strength_rows, thrust_rows = [], []
+        for item in narratives:
+            strength_map = item.get("strength_rsp") or item.get("narrative_rs") or {}
+            strength = strength_map.get(key) if isinstance(strength_map, dict) else None
+            score = (item.get("scores") or {}).get(key) or {}
+            thrust = score.get("thrust") if isinstance(score, dict) else None
+            if isnum(strength):
+                strength_rows.append((float(strength), item["name"], float(thrust) if isnum(thrust) else None))
+            if isnum(thrust):
+                thrust_rows.append((float(thrust), item["name"], float(strength) if isnum(strength) else None))
+        strength_rows.sort(key=lambda x: (-x[0], x[1]))
+        thrust_rows.sort(key=lambda x: (-x[0], x[1]))
+        lines.extend(["", label, "Strength"])
+        for value, name, thrust in strength_rows[:10]:
+            # Convert the horizon's raw thrust score to a cross-sectional percentile.
+            rank = next((i for i, row in enumerate(thrust_rows) if row[1] == name), None)
+            pct = 100 * (len(thrust_rows) - rank - 1) / max(1, len(thrust_rows) - 1) if rank is not None else None
+            lines.append(f"{name} | {fmt(value)}% | {fmt(pct)}%")
+        lines.extend(["", "Thrust"])
+        for rank, (value, name, strength) in enumerate(thrust_rows[:10]):
+            pct = 100 * (len(thrust_rows) - rank - 1) / max(1, len(thrust_rows) - 1)
+            lines.append(f"{name} | {fmt(strength)}% | {fmt(pct)}%")
 
+    screeners = screener_data.get("screeners") or {}
+    defs = [("1W", "weekly_strength", "rs_percentile_1w"), ("1M", "monthly_strength", "rs_percentile_1m"),
+            ("3M", "three_month_strength", "rs_percentile_3m"), ("6M", "six_month_strength", "rs_percentile_6m")]
+    def ranked_lines(title: str, exclude_extended: bool = False) -> list[str]:
+        result = [title]
+        for label, key, metric in defs:
+            section = screeners.get(key) if isinstance(screeners, dict) else None
+            tickers = section.get("tickers", []) if isinstance(section, dict) else []
+            ranked = []
+            for ticker in tickers if isinstance(tickers, list) else []:
+                if not isinstance(ticker, dict) or not isinstance(ticker.get("symbol"), str) or not isnum(ticker.get(metric)):
+                    continue
+                if exclude_extended and isnum(ticker.get("atr_extension")) and ticker["atr_extension"] >= 2.0:
+                    continue
+                ranked.append((float(ticker[metric]), ticker["symbol"].upper(), ticker))
+            ranked.sort(key=lambda x: (-x[0], x[1]))
+            result.extend(["", label])
+            result.extend(f"{symbol} | {fmt(value)}% | {fmt(ticker.get('stock_thrust_rs'))}%" for value, symbol, ticker in ranked[:10])
+        return result
+
+    lines.extend(["", "OPPORTUNITIES", "", "FRESH LEADERS"])
+    stock_events = {}
+    for event in events if isinstance(events, list) else []:
+        if isinstance(event, dict) and event.get("category") == "stock" and event.get("symbol"):
+            stock_events.setdefault(str(event["symbol"]).upper(), set()).add(event.get("type"))
+    fresh = [symbol for symbol, types in stock_events.items() if "new_fresh_leader" in types and "new_extended" not in types]
+    lines.extend(fresh[:10] or ["Keine frischen Leader gemeldet."])
+    lines.extend(["", "LEADERS"])
+    lines.extend(ranked_lines("LEADERS", exclude_extended=True)[1:])
+    lines.extend(["", "SCREENER-ERGEBNISSE"])
+    lines.extend(ranked_lines("SCREENER-ERGEBNISSE")[1:])
     lines.extend(["", "Relative Stärke ist kein Kaufsignal.", "Quelle: DocYolo77/yolo-dashboard"])
     return lines
 
@@ -356,7 +384,7 @@ def main() -> None:
     if len(set(dates)) != 1:
         fail(f"Snapshot dates do not match: {dates}")
     as_of = dates[0].isoformat()
-    lines = simple_digest_lines(dashboard, narrative_data)
+    lines = simple_digest_lines(dashboard, narrative_data, screener_data)
     send_chunks(lines)
     print(f"Simple Telegram digest sent. Snapshot: {as_of}")
 
