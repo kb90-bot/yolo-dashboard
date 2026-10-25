@@ -320,7 +320,7 @@ def simple_digest_lines(dashboard: dict, narrative_data: dict) -> list[str]:
     else:
         lines.append("Keine Daten verfügbar")
 
-    # Up to three unique multi-timeframe leaders, one symbol per line.
+    # Up to ten unique multi-timeframe leaders, one symbol per line.
     lines.extend(["", "WATCHLIST"])
     try:
         with open("data/optimization_leaders.json", encoding="utf-8") as handle:
@@ -333,7 +333,7 @@ def simple_digest_lines(dashboard: dict, narrative_data: dict) -> list[str]:
         symbol = row.get("symbol") if isinstance(row, dict) else None
         if isinstance(symbol, str) and symbol not in symbols:
             symbols.append(symbol)
-        if len(symbols) == 3:
+        if len(symbols) == 10:
             break
     if symbols:
         lines.extend(symbols)
