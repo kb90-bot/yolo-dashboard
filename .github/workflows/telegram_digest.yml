@@ -33,10 +33,10 @@ jobs:
       - name: Build leaderboards without sending a separate message
         continue-on-error: true
         run: |
-          python scripts/build_optimization_leaders.py \\
-            --history .cache/optimization_history.json \\
-            --output data/optimization_leaders.json \\
-            --message-output data/optimization_leaders_message.txt \\
+          python scripts/build_optimization_leaders.py \
+            --history .cache/optimization_history.json \
+            --output data/optimization_leaders.json \
+            --message-output data/optimization_leaders_message.txt \
             --no-send
 
       - name: Build and send dashboard digest
