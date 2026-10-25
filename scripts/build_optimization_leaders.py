@@ -305,6 +305,7 @@ def main() -> int:
     parser.add_argument("--source-url", default=SOURCE_URL)
     parser.add_argument("--history", default=".cache/optimization_history.json")
     parser.add_argument("--output", default="data/optimization_leaders.json")
+    parser.add_argument("--message-output", default=None, help="Optional path to write the formatted Telegram message")
     parser.add_argument("--no-send", action="store_true", help="Build output without sending Telegram")
     args = parser.parse_args()
 
@@ -335,6 +336,10 @@ def main() -> int:
     output_path.write_text(json.dumps(output, indent=2, ensure_ascii=False), encoding="utf-8")
 
     message = format_message(as_of, lists)
+    if args.message_output:
+        message_path = Path(args.message_output)
+        message_path.parent.mkdir(parents=True, exist_ok=True)
+        message_path.write_text(message, encoding="utf-8")
     print(f"Built {output_path}; eligible={len(tickers)}; weekly={len(lists['weekly'])}; "
           f"mtf={len(lists['mtf'])}; thrust={len(lists['thrust'])}; prior_snapshots={len(prior)}")
     if not args.no_send:
