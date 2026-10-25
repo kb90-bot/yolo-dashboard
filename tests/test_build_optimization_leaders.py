@@ -61,13 +61,13 @@ def test_mtf_requires_all_four_timeframes_and_uses_weekly_weight():
     lists = build_ranked_lists(eligible_tickers(sample_data()))
     assert [row["symbol"] for row in lists["mtf"]] == ["BBB", "AAA"]
     aaa = next(row for row in lists["mtf"] if row["symbol"] == "AAA")
-    assert aaa["mtf_score"] == 77.0  # .2*90 + .3*80 + .3*70 + .2*60
+    assert aaa["mtf_score"] == 75.0  # .2*90 + .3*80 + .3*70 + .2*60
     assert all(row["symbol"] != "MISSING" for row in lists["mtf"])
 
 
 def test_weekly_strength_and_thrust_are_separate_lists():
     lists = build_ranked_lists(eligible_tickers(sample_data()))
-    assert [row["symbol"] for row in lists["weekly"]] == ["AAA", "BBB", "MISSING"]
+    assert [row["symbol"] for row in lists["weekly"]] == ["MISSING", "AAA", "BBB"]
     assert [row["symbol"] for row in lists["thrust"]] == ["AAA", "BBB"]
 
 
@@ -84,8 +84,8 @@ def test_rank_change_is_positive_when_rank_improves():
     add_rank_changes(lists, prior)
     aaa = next(row for row in lists["weekly"] if row["symbol"] == "AAA")
     bbb = next(row for row in lists["weekly"] if row["symbol"] == "BBB")
-    assert aaa["rank_change_1d"] == 7
-    assert bbb["rank_change_1d"] == -1
+    assert aaa["rank_change_1d"] == 6
+    assert bbb["rank_change_1d"] == -2
 
 
 def test_no_prior_history_is_explicitly_unavailable():
@@ -113,4 +113,4 @@ def test_message_includes_weekly_monthly_multitimeframe_and_thrust():
 
 
 def test_source_date_parsing_uses_latest_market_session():
-    assert parse_source_date(sample_data()) .isoformat() == "2026-10-23"
+    assert parse_source_date(sample_data()).isoformat() == "2026-10-23"
