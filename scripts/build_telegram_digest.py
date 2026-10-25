@@ -292,13 +292,9 @@ def simple_digest_lines(dashboard: dict, narrative_data: dict) -> list[str]:
     regime = dashboard.get("market_regime") or {}
     state = str(regime.get("state") or "UNKNOWN").upper().replace("_", " ")
     lines.extend(["MARKTSTATUS", state])
-    if isnum(regime.get("score")):
-        lines.extend(["Markt-Score", fmt(regime["score"])])
     qqq = dashboard.get("qqq_health") or {}
     if qqq.get("base_state"):
         lines.extend(["", "QQQ", str(qqq["base_state"])])
-        if isnum(qqq.get("score")):
-            lines.extend(["Score", fmt(qqq["score"])])
 
     # Show only the strongest theme; put its name and value on separate lines.
     narratives = narrative_data.get("narratives") or []
