@@ -285,6 +285,65 @@ def send_chunks(lines: list[str]) -> None:
         send_telegram(chunk)
 
 
+def simple_digest_lines(dashboard: dict, narrative_data: dict) -> list[str]:
+    """Build a deliberately sparse, vertical Telegram message."""
+    lines = ["YOLO DAILY", f"Datenstand: {source_date(dashboard, 'dashboard_state.json').isoformat()}", ""]
+
+    regime = dashboard.get("market_regime") or {}
+    state = str(regime.get("state") or "UNKNOWN").upper().replace("_", " ")
+    lines.extend(["MARKTSTATUS", state])
+    if isnum(regime.get("score")):
+        lines.extend(["Markt-Score", fmt(regime["score"])])
+    qqq = dashboard.get("qqq_health") or {}
+    if qqq.get("base_state"):
+        lines.extend(["", "QQQ", str(qqq["base_state"])])
+        if isnum(qqq.get("score")):
+            lines.extend(["Score", fmt(qqq["score"])])
+
+    # Show only the strongest theme; put its name and value on separate lines.
+    narratives = narrative_data.get("narratives") or []
+    best = None
+    for item in narratives if isinstance(narratives, list) else []:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name") or item.get("label") or item.get("id")
+        rs = item.get("narrative_rs") or {}
+        values = [rs.get(h) for h in ("1w", "1m", "3m", "6m")] if isinstance(rs, dict) else []
+        valid = [float(v) for v in values if isnum(v)]
+        if isinstance(name, str) and valid:
+            candidate = (sum(valid) / len(valid), name.strip())
+            if best is None or candidate[0] > best[0]:
+                best = candidate
+    lines.extend(["", "TOP-THEMA"])
+    if best:
+        lines.extend([best[1], "Ø Relative Stärke", fmt(best[0])])
+    else:
+        lines.append("Keine Daten verfügbar")
+
+    # Up to three unique multi-timeframe leaders, one symbol per line.
+    lines.extend(["", "WATCHLIST"])
+    try:
+        with open("data/optimization_leaders.json", encoding="utf-8") as handle:
+            leaders_data = json.load(handle)
+        leaders = (leaders_data.get("leaderboards") or {}).get("mtf") or []
+    except (OSError, json.JSONDecodeError):
+        leaders = []
+    symbols = []
+    for row in leaders:
+        symbol = row.get("symbol") if isinstance(row, dict) else None
+        if isinstance(symbol, str) and symbol not in symbols:
+            symbols.append(symbol)
+        if len(symbols) == 3:
+            break
+    if symbols:
+        lines.extend(symbols)
+    else:
+        lines.append("Keine Leader-Daten verfügbar")
+
+    lines.extend(["", "Relative Stärke ist kein Kaufsignal.", "Quelle: DocYolo77/yolo-dashboard"])
+    return lines
+
+
 def main() -> None:
     dashboard = fetch_json("dashboard_state.json")
     narrative_data = fetch_json("narratives.json")
@@ -297,31 +356,9 @@ def main() -> None:
     if len(set(dates)) != 1:
         fail(f"Snapshot dates do not match: {dates}")
     as_of = dates[0].isoformat()
-
-    lines = [
-        "YOLO — MOMENTUM DASHBOARD",
-        f"Datenstand: {as_of}",
-        "",
-        "1. DIE WICHTIGSTEN VERÄNDERUNGEN",
-        *change_lines(dashboard),
-        "",
-        "2. MARKTREGIME",
-        *regime_lines(dashboard),
-        "",
-        "3. THEMENSTÄRKE ÜBER ZEITFENSTER",
-        *narrative_consensus(narrative_data),
-        "",
-        "4. ZUSÄTZLICHE ZEITFENSTER-KANDIDATEN",
-        *screener_rows(screener_data),
-        "",
-        "5. MULTI-TIMEFRAME LEADERS & THRUST",
-        *leaderboard_lines(),
-        "",
-        "Hinweis: Rankings sind relative Stärke-Screenings, keine Kaufsignale. MTF-Score ist experimentell.",
-        "Quelle: DocYolo77/yolo-dashboard",
-    ]
+    lines = simple_digest_lines(dashboard, narrative_data)
     send_chunks(lines)
-    print(f"Concise Telegram digest sent. Snapshot: {as_of}")
+    print(f"Simple Telegram digest sent. Snapshot: {as_of}")
 
 
 if __name__ == "__main__":
