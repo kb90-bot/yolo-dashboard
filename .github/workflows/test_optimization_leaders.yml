@@ -9,6 +9,8 @@ on:
       - main
     paths:
       - "scripts/build_optimization_leaders.py"
+      - "scripts/build_telegram_digest.py"
+      - ".github/workflows/telegram_digest.yml"
       - "tests/test_build_optimization_leaders.py"
       - ".github/workflows/test_optimization_leaders.yml"
 
@@ -29,6 +31,9 @@ jobs:
 
       - name: Install pytest
         run: python -m pip install pytest
+
+      - name: Check Python syntax
+        run: python -m py_compile scripts/build_optimization_leaders.py scripts/build_telegram_digest.py
 
       - name: Run optimization leaderboard tests
         run: python -m pytest tests/test_build_optimization_leaders.py -q
