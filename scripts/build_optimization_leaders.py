@@ -196,50 +196,80 @@ def signed_change(value: Any) -> str:
 
 
 def format_message(as_of: str, lists: dict[str, list[dict[str, Any]]], limit: int = 10) -> str:
+    """Format the digest for quick scanning in Telegram's plain-text view."""
+    divider = "━━━━━━━━━━━━━━━━━━━━"
+    thin_divider = "────────────────────"
+
+    def rank_label(value: Any) -> str:
+        return "NEU" if not isinstance(value, int) else f"{value:+d}"
+
     lines = [
-        "YOLO — MULTI-TIMEFRAME LEADERS",
-        f"Datenquelle: DocYolo77/yolo-dashboard | Stand: {as_of}",
+        "📊 YOLO | MULTI-TIMEFRAME LEADERS",
+        f"Datenstand: {as_of}",
+        "Quelle: DocYolo77/yolo-dashboard",
         "",
-        "1) WEEKLY STRENGTH — frische relative Stärke",
+        divider,
+        "1/3  WEEKLY STRENGTH",
+        "Frische relative Stärke auf Wochenbasis",
+        divider,
+        "",
     ]
+
     for row in lists["weekly"][:limit]:
-        lines.append(
-            f'{row["rank"]:>2}. {row["symbol"]:<6} RS {row["weekly_rs"]:.1f}'
-            f' | Rang 1D {signed_change(row.get("rank_change_1d"))}'
-            f' | Rang 5D {signed_change(row.get("rank_change_5d"))}'
-        )
+        lines.extend([
+            f'{row["rank"]:02d}  {row["symbol"]}   RS {row["weekly_rs"]:.1f}',
+            f'     Rangänderung: 1D {rank_label(row.get("rank_change_1d"))}  |  5D {rank_label(row.get("rank_change_5d"))}',
+            "",
+        ])
 
-    lines += ["", "2) MULTI-TIMEFRAME LEADERS — 20% 1W / 30% 1M / 30% 3M / 20% 6M"]
-    for row in lists["mtf"][:limit]:
-        lines.append(
-            f'{row["rank"]:>2}. {row["symbol"]:<6} MTF {row["mtf_score"]:.1f}'
-            f' | 1W {row["rs_percentile_1w"]:.0f}'
-            f' 1M {row["rs_percentile_1m"]:.0f}'
-            f' 3M {row["rs_percentile_3m"]:.0f}'
-            f' 6M {row["rs_percentile_6m"]:.0f}'
-            f' | Rang 5D {signed_change(row.get("rank_change_5d"))}'
-        )
-
-    lines += ["", "3) WEEKLY THRUST — Momentum-Beschleunigung, nicht langfristige Stärke"]
-    for row in lists["thrust"][:limit]:
-        lines.append(
-            f'{row["rank"]:>2}. {row["symbol"]:<6} Thrust {row["thrust_percentile_1w"]:.1f}'
-            f' | Weekly RS {row["rs_percentile_1w"]:.1f}'
-            f' | Rang 5D {signed_change(row.get("rank_change_5d"))}'
-        )
-
-    lines += [
+    lines.extend([
+        divider,
+        "2/3  MULTI-TIMEFRAME LEADERS",
+        "Gewichtung: 1W 20%  |  1M 30%  |  3M 30%  |  6M 20%",
+        divider,
         "",
-        "Hinweis: Rangänderungen erscheinen erst, wenn Vergleichs-Snapshots vorliegen.",
-        "MTF-Score ist ein neuer, noch nicht historisch validierter Ranking-Score — kein Kaufsignal.",
-    ]
-    message = "\n".join(lines)
+    ])
+
+    for row in lists["mtf"][:limit]:
+        lines.extend([
+            f'{row["rank"]:02d}  {row["symbol"]}   MTF {row["mtf_score"]:.1f}',
+            f'     1W {row["rs_percentile_1w"]:.0f}  |  1M {row["rs_percentile_1m"]:.0f}  |  3M {row["rs_percentile_3m"]:.0f}  |  6M {row["rs_percentile_6m"]:.0f}',
+            f'     Rangänderung: 5D {rank_label(row.get("rank_change_5d"))}',
+            "",
+        ])
+
+    lines.extend([
+        divider,
+        "3/3  WEEKLY THRUST",
+        "Kurzfristige Momentum-Beschleunigung – keine Langfrist-Stärke",
+        divider,
+        "",
+    ])
+
+    for row in lists["thrust"][:limit]:
+        lines.extend([
+            f'{row["rank"]:02d}  {row["symbol"]}   Thrust {row["thrust_percentile_1w"]:.1f}',
+            f'     Weekly RS {row["rs_percentile_1w"]:.1f}  |  Rangänderung 5D {rank_label(row.get("rank_change_5d"))}',
+            "",
+        ])
+
+    lines.extend([
+        divider,
+        "HINWEISE",
+        "• Rangänderungen erscheinen, sobald Vergleichs-Snapshots vorliegen.",
+        "• MTF-Score ist experimentell und noch nicht historisch validiert.",
+        "• Rankings sind keine Kaufsignale.",
+    ])
+    message = "\n".join(lines).strip()
     if len(message) <= MAX_TELEGRAM_LENGTH:
         return message
 
-    # Keep the message under Telegram's safe length even if symbols/data expand.
+    # Trim each leaderboard evenly rather than cutting a message mid-row.
+    for reduced_limit in range(limit - 1, 0, -1):
+        candidate = format_message(as_of, lists, reduced_limit)
+        if len(candidate) <= MAX_TELEGRAM_LENGTH:
+            return candidate
     return message[: MAX_TELEGRAM_LENGTH - 20].rstrip() + "\n… gekürzt"
-
 
 def send_telegram(message: str) -> None:
     import urllib.error

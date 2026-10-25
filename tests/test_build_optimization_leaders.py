@@ -109,7 +109,9 @@ def test_message_includes_weekly_monthly_multitimeframe_and_thrust():
     assert "WEEKLY STRENGTH" in message
     assert "MULTI-TIMEFRAME LEADERS" in message
     assert "WEEKLY THRUST" in message
-    assert "20% 1W / 30% 1M / 30% 3M / 20% 6M" in message
+    assert "Gewichtung: 1W 20%" in message
+    assert "━━━━━━━━━━━━━━━━━━━━" in message
+    assert "Rangänderung:" in message
 
 
 def test_source_date_parsing_uses_latest_market_session():
