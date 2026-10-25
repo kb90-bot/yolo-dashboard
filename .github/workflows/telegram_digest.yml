@@ -11,9 +11,34 @@ permissions:
 jobs:
   telegram-digest:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
 
     steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Restore optimization rank history
+        uses: actions/cache/restore@v4
+        with:
+          path: .cache/optimization_history.json
+          key: optimization-history-${{ github.run_id }}
+          restore-keys: |
+            optimization-history-
+
+      - name: Build leaderboards without sending a separate message
+        continue-on-error: true
+        run: |
+          python scripts/build_optimization_leaders.py \
+            --history .cache/optimization_history.json \
+            --output data/optimization_leaders.json \
+            --message-output data/optimization_leaders_message.txt \
+            --no-send
+
       - name: Build and send dashboard digest
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -345,6 +370,22 @@ jobs:
 
           lines += ["", "Quelle: DocYolo77/yolo-dashboard"]
 
+          # Append the experimental leaderboards to this same digest workflow.
+          # If their source/build is unavailable, the original digest still sends.
+          leaderboard_path = "data/optimization_leaders_message.txt"
+          if os.path.isfile(leaderboard_path):
+              with open(leaderboard_path, encoding="utf-8") as handle:
+                  leaderboard_lines = handle.read().splitlines()
+              # Drop the helper message title/date/source; the digest already has them.
+              lines += ["", "5. MULTI-TIMEFRAME LEADERBOARDS", ""] + leaderboard_lines[4:]
+
           send_chunks(lines)
           print(f"Telegram digest sent. Snapshot: {dashboard_date}")
           PY
+
+      - name: Save optimization rank history
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .cache/optimization_history.json
+          key: optimization-history-${{ github.run_id }}
