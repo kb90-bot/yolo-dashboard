@@ -108,31 +108,50 @@ def change_lines(dashboard: dict, limit: int = 8) -> list[str]:
         direction = "gefallen" if qqq["score_delta"] < 0 else "gestiegen"
         result.append(f"QQQ-Health: {qqq.get('base_state')} — Score {direction} um {abs(qqq['score_delta']):.1f} auf {fmt(qqq.get('score'))}.")
 
-    # Use the current narrative state snapshot, not raw event-code strings.
-    narratives = ((dashboard.get("narratives") or {}).get("items") or {})
-    narrative_candidates = []
-    if isinstance(narratives, dict):
-        for item in narratives.values():
-            if not isinstance(item, dict):
-                continue
-            name = item.get("name") or item.get("narrative_name")
-            delta5 = item.get("structural_score_delta5d")
-            rank_delta = item.get("rank_delta")
-            state = str(item.get("lifecycle_state") or "").upper()
-            modifier = str(item.get("momentum_modifier") or "").upper()
-            if not isinstance(name, str):
-                continue
-            if isnum(delta5) and delta5 >= 8:
-                narrative_candidates.append((delta5, f"{name}: struktureller Score {delta5:+.1f} in 5 Tagen" + (f", {modifier.lower()}" if modifier else "") + "."))
-            elif isnum(rank_delta) and rank_delta >= 3 and state in {"ACTIVE", "EMERGING", "MATURE"}:
-                narrative_candidates.append((rank_delta * 2, f"{name}: im Themenranking {int(rank_delta)} Plätze gestiegen ({state.lower()})."))
-        seen = set()
-        for _, line in sorted(narrative_candidates, reverse=True):
-            if line not in seen:
-                result.append(line)
-                seen.add(line)
-            if len(result) >= limit - 3:
-                break
+    # Summarize narrative events by theme so rank, score and modifier changes do not spam.
+    narrative_groups: dict[str, dict] = {}
+    for event in events:
+        if not isinstance(event, dict) or event.get("category") != "narrative":
+            continue
+        name = event.get("narrative_name") or event.get("narrative_id")
+        typ = event.get("type")
+        if not isinstance(name, str) or not isinstance(typ, str):
+            continue
+        group = narrative_groups.setdefault(name, {})
+        group[typ] = event
+
+    narrative_lines = []
+    for name, group in narrative_groups.items():
+        parts = []
+        surge = group.get("structural_score_surge")
+        if surge and isnum(surge.get("from_score")) and isnum(surge.get("to_score")):
+            parts.append(f"structuraler Score {surge['from_score']:.1f} → {surge['to_score']:.1f}")
+        rank = group.get("rank_improved")
+        if rank and isinstance(rank.get("from_rank"), int) and isinstance(rank.get("to_rank"), int):
+            parts.append(f"Rang {rank['from_rank']} → {rank['to_rank']}")
+        if "new_active" in group:
+            parts.append("neu aktiv")
+        if "new_fading" in group:
+            parts.append("fällt zurück")
+        gained = sorted({
+            str(ev.get("modifier")) for typ, ev in group.items()
+            if typ == "modifier_gained" and ev.get("modifier")
+        })
+        lost = sorted({
+            str(ev.get("modifier")) for typ, ev in group.items()
+            if typ == "modifier_lost" and ev.get("modifier")
+        })
+        if gained:
+            parts.append("Momentum: " + ", ".join(gained) + " hinzu")
+        if lost:
+            parts.append("Momentum: " + ", ".join(lost) + " verloren")
+        if parts:
+            priority = 100 if surge else (60 if rank else 20)
+            narrative_lines.append((priority, name, f"{name}: " + "; ".join(parts) + "."))
+
+    for _, _, line in sorted(narrative_lines, key=lambda row: (-row[0], row[1])):
+        if line not in result and len(result) < limit - 3:
+            result.append(line)
 
     stock_lines = []
     for symbol, types in stock.items():
