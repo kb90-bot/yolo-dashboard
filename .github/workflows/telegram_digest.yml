@@ -1,4 +1,4 @@
-name: YOLO Telegram Dashboard Digest
+name: YOLO Telegram Setup Digest
 
 on:
   workflow_dispatch:
@@ -22,31 +22,11 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Restore optimization rank history
-        uses: actions/cache/restore@v4
-        with:
-          path: .cache/optimization_history.json
-          key: optimization-history-${{ github.run_id }}
-          restore-keys: |
-            optimization-history-
+      - name: Test upstream opportunity filters
+        run: python -m unittest discover -s tests -p "test_setup_digest.py" -v
 
-      - name: Build leaderboards without separate Telegram messages
-        continue-on-error: true
-        run: |
-          python scripts/build_optimization_leaders.py \
-            --history .cache/optimization_history.json \
-            --output data/optimization_leaders.json \
-            --no-send
-
-      - name: Build and send concise combined digest
+      - name: Fetch upstream dashboard state, filter and send digest
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python scripts/build_telegram_digest.py
-
-      - name: Save optimization rank history
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: .cache/optimization_history.json
-          key: optimization-history-${{ github.run_id }}
