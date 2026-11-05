@@ -2,6 +2,11 @@ name: YOLO Telegram Setup Digest
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - "scripts/build_telegram_digest.py"
+      - "tests/test_setup_digest.py"
+      - ".github/workflows/telegram_digest.yml"
   schedule:
     - cron: "30 23 * * 1-5"
 
@@ -25,7 +30,12 @@ jobs:
       - name: Test upstream opportunity filters
         run: python -m unittest discover -s tests -p "test_setup_digest.py" -v
 
+      - name: Validate live upstream data and build preview (no Telegram send)
+        if: github.event_name == 'pull_request'
+        run: python scripts/build_telegram_digest.py --no-send
+
       - name: Fetch upstream dashboard state, filter and send digest
+        if: github.event_name != 'pull_request'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
